@@ -468,56 +468,104 @@ const SurveyCard: React.FC<{ survey: Survey; isVisible: boolean; onSubmit: Submi
 };
 
 const App: React.FC = () => {
-    const [survey, setSurvey] = useState<Survey | null>(null);
+    const [currentSurvey, setCurrentSurvey] = useState<Survey | null>(null);
+    const [nextSurvey, setNextSurvey] = useState<Survey | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    const [isFetchingNext, setIsFetchingNext] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [isVisible, setIsVisible] = useState(false);
     const [submissionResult, setSubmissionResult] = useState<string | null>(null);
     const methods = useForm<SurveyFormData>();
 
-    const generateSurvey = async () => {
-        setIsVisible(false);
-        setIsLoading(true);
-        setError(null);
-        setSubmissionResult(null);
-        methods.reset();
+    const fetchNewSurvey = async (): Promise<Survey> => {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: "Generate a fun, engaging, and visually stunning survey. The theme should have vibrant, harmonious colors with good contrast. Include a creative title, a captivating description, and 1-2 pages, each with 2-4 varied questions (text, radio, checkbox, slider, and the new 'star_rating'). Questions should be creative and use emojis (e.g., 'Rate your energy level today ⚡️'). For sliders, provide logical min/max/step values. For star_ratings, use a count of 5. Strictly adhere to the provided schema. Make it awesome!",
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: surveySchema
+            }
+        });
+        return JSON.parse(response.text) as Survey;
+    };
+
+    const loadNextSurveyInBackground = async () => {
+        if (isFetchingNext) return;
+        setIsFetchingNext(true);
         try {
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: "Generate a fun, engaging, and visually stunning survey. The theme should have vibrant, harmonious colors with good contrast. Include a creative title, a captivating description, and 1-2 pages, each with 2-4 varied questions (text, radio, checkbox, slider, and the new 'star_rating'). Questions should be creative and use emojis (e.g., 'Rate your energy level today ⚡️'). For sliders, provide logical min/max/step values. For star_ratings, use a count of 5. Strictly adhere to the provided schema. Make it awesome!",
-                config: {
-                    responseMimeType: "application/json",
-                    responseSchema: surveySchema
-                }
-            });
-            
-            const surveyData = JSON.parse(response.text) as Survey;
-            setSurvey(surveyData);
+            const surveyData = await fetchNewSurvey();
+            setNextSurvey(surveyData);
         } catch (e) {
-            console.error(e);
-            setError('Failed to generate a new survey. Please try again!');
+            console.error("Failed to fetch next survey in background:", e);
+            // Optionally handle background fetch error, but don't block the UI
         } finally {
-            setIsLoading(false);
-            setTimeout(() => setIsVisible(true), 100); 
+            setIsFetchingNext(false);
         }
     };
 
     useEffect(() => {
-        generateSurvey();
+        const initialLoad = async () => {
+            setIsLoading(true);
+            setError(null);
+            try {
+                const surveyData = await fetchNewSurvey();
+                setCurrentSurvey(surveyData);
+                loadNextSurveyInBackground(); // Pre-fetch the next one
+            } catch (e) {
+                console.error(e);
+                setError('Failed to generate the initial survey. Please try again!');
+            } finally {
+                setIsLoading(false);
+                setTimeout(() => setIsVisible(true), 100);
+            }
+        };
+        initialLoad();
     }, []);
 
+    const handleShowNextSurvey = async () => {
+        if (nextSurvey) {
+            setIsVisible(false);
+            setTimeout(() => {
+                setCurrentSurvey(nextSurvey);
+                setNextSurvey(null);
+                methods.reset();
+                setSubmissionResult(null);
+                setIsVisible(true);
+                loadNextSurveyInBackground(); // Fetch the next one
+            }, 500); // Wait for fade out animation
+        } else {
+            // Fallback if the next survey isn't ready yet
+            setIsVisible(false);
+            setIsLoading(true);
+            setError(null);
+            setSubmissionResult(null);
+            methods.reset();
+            try {
+                const surveyData = await fetchNewSurvey();
+                setCurrentSurvey(surveyData);
+                loadNextSurveyInBackground();
+            } catch (e) {
+                console.error(e);
+                setError('Failed to generate a new survey. Please try again!');
+            } finally {
+                setIsLoading(false);
+                setTimeout(() => setIsVisible(true), 100);
+            }
+        }
+    };
+    
     const onSubmit: SubmitHandler<SurveyFormData> = (data) => {
         console.log("Survey Answers Submitted:", data);
         setSubmissionResult(JSON.stringify(data, null, 2));
     };
 
     const buttonStyle = useMemo(() => {
-        if (!survey) return {};
+        if (!currentSurvey) return {};
         return {
-            backgroundColor: survey.config.theme.primaryColor,
-            color: survey.config.theme.backgroundColor,
+            backgroundColor: currentSurvey.config.theme.primaryColor,
+            color: currentSurvey.config.theme.backgroundColor,
         };
-    }, [survey]);
+    }, [currentSurvey]);
 
     return (
         <>
@@ -525,13 +573,13 @@ const App: React.FC = () => {
             {isLoading && <Loader />}
             {error && !isLoading && <div className="error-message">{error}</div>}
             <FormProvider {...methods}>
-                {!isLoading && survey && (
-                    <SurveyCard survey={survey} isVisible={isVisible} onSubmit={onSubmit} submissionResult={submissionResult} />
+                {!isLoading && currentSurvey && (
+                    <SurveyCard survey={currentSurvey} isVisible={isVisible} onSubmit={onSubmit} submissionResult={submissionResult} />
                 )}
             </FormProvider>
             <button
                 className="next-survey-btn"
-                onClick={generateSurvey}
+                onClick={handleShowNextSurvey}
                 style={buttonStyle}
                 disabled={isLoading}
                 aria-label="Generate New Survey"
